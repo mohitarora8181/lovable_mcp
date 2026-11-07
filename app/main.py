@@ -2,6 +2,7 @@ from functools import lru_cache
 import logging
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .config import Settings, get_settings
@@ -21,8 +22,16 @@ from .models import (
     LandingPage,
 )
 from .oauth import LovableOAuth, LovableOAuthError
+from .security import require_api_key
 
 app = FastAPI(title="Lovable Landing Pages API", version="0.2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in get_settings().cors_allowed_origins.split(",") if origin.strip()],
+    allow_credentials=False,
+    allow_methods=["POST"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +85,7 @@ async def create_project(
     projects: JsonProjectStore = Depends(get_projects),
     lovable: LovableMcpClient = Depends(get_lovable_client),
     settings: Settings = Depends(get_settings),
+    _: None = Depends(require_api_key),
 ) -> CreateProjectResponse:
     lovable_project_id = _host_project_id(settings)
     project_id = payload.project_id or slugify(payload.idea)
@@ -114,6 +124,7 @@ async def enhance_project(
     background_tasks: BackgroundTasks,
     projects: JsonProjectStore = Depends(get_projects),
     lovable: LovableMcpClient = Depends(get_lovable_client),
+    _: None = Depends(require_api_key),
 ) -> EnhanceProjectResponse:
     page = await _get_project_or_404(project_id, projects)
     background_tasks.add_task(

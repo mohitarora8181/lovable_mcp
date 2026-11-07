@@ -33,6 +33,14 @@ LOVABLE_PROJECT_ID=the-one-lovable-host-project-id
 # Optional; included in create responses.
 LOVABLE_BASE_URL=https://your-site.lovable.app
 PROJECTS_FILE=data/projects.json
+
+# Required for both write endpoints. Generate a long random value and keep it server-side.
+APP_API_KEY=replace-with-a-long-random-secret
+# Comma-separated browser origins allowed to call the API.
+CORS_ALLOWED_ORIGINS=https://your-frontend.example.com
+# Per-IP safety limit for requests that could spend Lovable credits.
+WRITE_RATE_LIMIT=5
+RATE_LIMIT_WINDOW_SECONDS=60
 ```
 
 Start the service, then open `http://127.0.0.1:8000/auth/lovable/login` in a
@@ -50,6 +58,16 @@ uvicorn app.main:app --reload
 
 The interactive API documentation is available at `http://127.0.0.1:8000/docs`.
 
+Every write request needs this header:
+
+```http
+Authorization: Bearer <APP_API_KEY>
+```
+
+Do not put `APP_API_KEY` in a public browser application or a mobile app: users
+can extract it. Call this API from your own trusted backend, or replace this
+single shared key with per-user authentication before exposing the product.
+
 ## API
 
 Create a landing-page route in the configured Lovable project:
@@ -57,6 +75,7 @@ Create a landing-page route in the configured Lovable project:
 ```powershell
 Invoke-RestMethod -Method Post http://127.0.0.1:8000/projects `
   -ContentType 'application/json' `
+  -Headers @{ Authorization = 'Bearer replace-with-your-app-api-key' } `
   -Body '{"idea":"A coffee roaster subscription service", "reference_sites":["https://example.com"], "images":[], "urls_to_include":["https://instagram.com/example"], "project_id":"coffee-roaster"}'
 ```
 
@@ -73,6 +92,7 @@ Enhance only that landing page:
 ```powershell
 Invoke-RestMethod -Method Post http://127.0.0.1:8000/projects/coffee-roaster/enhancements `
   -ContentType 'application/json' `
+  -Headers @{ Authorization = 'Bearer replace-with-your-app-api-key' } `
   -Body '{"enhancement":"Add a testimonials section before the final call to action."}'
 ```
 
