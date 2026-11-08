@@ -231,7 +231,7 @@ URLs that must appear somewhere on this page: {payload.urls_to_include}
 
 Before designing or coding, infer the product category, likely audience, brand personality, and visual expectations from the idea and design references. Evaluate several appropriate color-theme directions internally, then deliberately choose the strongest one for this specific landing page. Use the selected palette consistently for background, surface, typography, primary/secondary calls to action, and interactive states. Prioritize clear visual hierarchy and accessible text/background contrast; do not copy a reference site's branding unless the request explicitly asks for it.
 
-Build a polished, responsive, accessible single landing page using that chosen visual direction. Include a footer on this page with the visible credit `Developed by Mohit Arora`, where `Mohit Arora` is a hyperlink to `https://instagram.com/mohit_8181`. Report the selected color direction, files, and route you changed when finished."""
+Build a polished, responsive, accessible single landing page using that chosen visual direction. Include route-specific SEO metadata: a unique descriptive title, meta description, canonical URL for `{page.route}` when the site's base URL is available, and suitable Open Graph/social sharing title, description, and image metadata. Make the page recognizable to search engines by using one clear H1, meaningful section headings, semantic HTML, descriptive link text, and image alt text. Do not duplicate another route's title or description. Include a footer on this page with the visible credit `Developed by Mohit Arora`, where `Mohit Arora` is a hyperlink to `https://instagram.com/mohit_8181`. Report the selected color direction, SEO metadata, files, and route you changed when finished."""
 
 
 def _enhancement_prompt(page: LandingPage, enhancement: str) -> str:
@@ -239,7 +239,7 @@ def _enhancement_prompt(page: LandingPage, enhancement: str) -> str:
 
 Apply this enhancement only to the landing page at `{page.route}`: {enhancement}
 
-You may edit only the route-specific folder for `{page.project_id}` and the minimum routing code needed for that existing route. Do not modify, delete, move, rename, or restyle any other page, route, or route-specific folder. Preserve the existing route `{page.route}` and its public behavior. Report exactly which files you changed."""
+You may edit only the route-specific folder for `{page.project_id}` and the minimum routing code needed for that existing route. Do not modify, delete, move, rename, or restyle any other page, route, or route-specific folder. Preserve the existing route `{page.route}` and its public behavior. Keep its route-specific SEO metadata unique and accurate; update its title, meta description, Open Graph metadata, semantic headings, or alt text only when this enhancement changes them. Report exactly which files you changed."""
 
 
 def _delete_page_prompt(page: LandingPage) -> str:
