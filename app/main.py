@@ -17,6 +17,7 @@ from .lovable import LovableMcpClient, LovableMcpError
 from .models import (
     CreateProjectRequest,
     CreateProjectResponse,
+    DeleteProjectResponse,
     EnhanceProjectRequest,
     EnhanceProjectResponse,
     LandingPage,
@@ -142,6 +143,23 @@ async def enhance_project(
     )
 
 
+@app.delete(
+    "/projects/{project_id}",
+    response_model=DeleteProjectResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def delete_project(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    projects: JsonProjectStore = Depends(get_projects),
+    lovable: LovableMcpClient = Depends(get_lovable_client),
+    _: None = Depends(require_api_key),
+) -> DeleteProjectResponse:
+    page = await _get_project_or_404(project_id, projects)
+    background_tasks.add_task(_delete_and_publish, lovable, page, projects)
+    return DeleteProjectResponse(project_id=page.project_id, route=page.route)
+
+
 async def _build_and_publish(
     lovable: LovableMcpClient,
     lovable_project_id: str,
@@ -159,6 +177,21 @@ async def _build_and_publish(
         logger.exception("Lovable background build/publish failed for page '%s'.", project_id)
         if is_new_page:
             await projects.remove(project_id)
+
+
+async def _delete_and_publish(
+    lovable: LovableMcpClient,
+    page: LandingPage,
+    projects: JsonProjectStore,
+) -> None:
+    """Remove one page route and publish only after Lovable confirms the change."""
+    try:
+        await lovable.send_message(page.lovable_project_id, _delete_page_prompt(page))
+        await lovable.deploy_project(page.lovable_project_id)
+        await projects.remove(page.project_id)
+        logger.info("Lovable deleted and unpublished page '%s'.", page.project_id)
+    except LovableMcpError:
+        logger.exception("Lovable background delete/publish failed for page '%s'.", page.project_id)
 
 
 async def _get_project_or_404(project_id: str, projects: JsonProjectStore) -> LandingPage:
@@ -207,3 +240,11 @@ def _enhancement_prompt(page: LandingPage, enhancement: str) -> str:
 Apply this enhancement only to the landing page at `{page.route}`: {enhancement}
 
 You may edit only the route-specific folder for `{page.project_id}` and the minimum routing code needed for that existing route. Do not modify, delete, move, rename, or restyle any other page, route, or route-specific folder. Preserve the existing route `{page.route}` and its public behavior. Report exactly which files you changed."""
+
+
+def _delete_page_prompt(page: LandingPage) -> str:
+    return f"""You are modifying a shared multi-page landing-site project.
+
+Delete only the landing page at `{page.route}`. Remove its route-specific folder for `{page.project_id}` and unregister that one route according to the existing routing conventions.
+
+Do not modify, delete, move, rename, or restyle any other page, route, route-specific folder, global styles, or configuration. Do not replace this page with a redirect or fallback page. Report exactly which files you removed or changed when finished."""

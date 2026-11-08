@@ -49,3 +49,10 @@ class EnhanceProjectResponse(BaseModel):
     route: str
     status: str = "queued"
     message: str = "Enhancement queued. Lovable will apply it and publish the site in the background."
+
+
+class DeleteProjectResponse(BaseModel):
+    project_id: str
+    route: str
+    status: str = "queued"
+    message: str = "Deletion queued. Lovable will remove this page and publish the site in the background."

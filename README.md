@@ -96,5 +96,12 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/projects/coffee-roaster/enh
   -Body '{"enhancement":"Add a testimonials section before the final call to action."}'
 ```
 
+Delete only that landing-page route and publish the updated site:
+
+```powershell
+Invoke-RestMethod -Method Delete http://127.0.0.1:8000/projects/coffee-roaster `
+  -Headers @{ Authorization = 'Bearer replace-with-your-app-api-key' }
+```
+
 `data/projects.json` stores local page metadata. This is intended for local
 development; use a database and encrypted token storage in production.
