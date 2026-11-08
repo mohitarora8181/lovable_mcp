@@ -196,7 +196,9 @@ Design references: {payload.reference_sites}
 Image URLs/assets to use when appropriate: {payload.images}
 URLs that must appear somewhere on this page: {payload.urls_to_include}
 
-Build a polished, responsive, accessible single landing page. Report the files and route you changed when finished."""
+Before designing or coding, infer the product category, likely audience, brand personality, and visual expectations from the idea and design references. Evaluate several appropriate color-theme directions internally, then deliberately choose the strongest one for this specific landing page. Use the selected palette consistently for background, surface, typography, primary/secondary calls to action, and interactive states. Prioritize clear visual hierarchy and accessible text/background contrast; do not copy a reference site's branding unless the request explicitly asks for it.
+
+Build a polished, responsive, accessible single landing page using that chosen visual direction. Include a footer on this page with the visible credit `Developed by Mohit Arora`, where `Mohit Arora` is a hyperlink to `https://instagram.com/mohit_8181`. Report the selected color direction, files, and route you changed when finished."""
 
 
 def _enhancement_prompt(page: LandingPage, enhancement: str) -> str:
