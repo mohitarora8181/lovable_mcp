@@ -26,6 +26,14 @@ class LovableOAuth:
         self._lock = asyncio.Lock()
 
     async def authorization_url(self) -> str:
+        if not self.settings.lovable_oauth_client_id and not _is_loopback_url(
+            self.settings.lovable_oauth_redirect_uri
+        ):
+            raise LovableOAuthError(
+                "This is a hosted OAuth callback. Set LOVABLE_OAUTH_CLIENT_ID and "
+                "LOVABLE_OAUTH_CLIENT_SECRET from a Lovable OAuth client that has this exact "
+                "callback URL registered. Automatic registration is only suitable for localhost clients."
+            )
         metadata = await self._discover()
         client_id, client_secret = await self._client_credentials(metadata)
         verifier = _url_safe_token(64)
@@ -232,3 +240,8 @@ def _authorization_metadata_url(issuer: str) -> str:
     return urlunsplit(
         (parsed.scheme, parsed.netloc, f"/.well-known/oauth-authorization-server{parsed.path}", "", "")
     )
+
+
+def _is_loopback_url(url: str) -> bool:
+    hostname = urlsplit(url).hostname
+    return hostname in {"localhost", "127.0.0.1", "::1"}

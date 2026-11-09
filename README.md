@@ -50,6 +50,30 @@ Lovable OAuth client key is not needed. Resulting client credentials and
 access/refresh tokens are kept locally in `data/lovable_oauth.json` and
 refreshed automatically; do not commit that file.
 
+### Hosted deployment OAuth
+
+Automatic registration is for a local `localhost` callback only. For FastAPI
+Cloud or any other hosted deployment, register an OAuth client in Lovable and
+add the exact public callback URL, for example:
+
+```text
+https://your-service.fastapicloud.com/auth/lovable/callback
+```
+
+Set these as deployment environment variables (not in frontend code):
+
+```dotenv
+LOVABLE_OAUTH_CLIENT_ID=your-lovable-client-id
+LOVABLE_OAUTH_CLIENT_SECRET=your-lovable-client-secret
+LOVABLE_OAUTH_REDIRECT_URI=https://your-service.fastapicloud.com/auth/lovable/callback
+```
+
+If Lovable has not approved your hosted callback or your client lacks the
+required project-write scope, the hosted OAuth flow cannot complete. Contact
+Lovable support for callback approval or scope access. Also note that the JSON
+files used here are local development storage; hosted deployments need durable,
+encrypted storage for OAuth tokens and page metadata.
+
 ## Run
 
 ```powershell
