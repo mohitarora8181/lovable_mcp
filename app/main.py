@@ -49,6 +49,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 logger = logging.getLogger(__name__)
+DUPLICATE_ROUTE_SENTINEL = "CANCEL_DUPLICATE_PROJECT_ID"
 
 
 def get_projects(settings: Settings = Depends(get_settings)) -> JsonProjectStore:
@@ -316,7 +317,12 @@ async def _build_and_publish(
 ) -> None:
     """Run after the HTTP response: build first, then publish the host project."""
     try:
-        await lovable.send_message(lovable_project_id, prompt)
+        response = await lovable.send_message(lovable_project_id, prompt)
+        if DUPLICATE_ROUTE_SENTINEL in response:
+            if is_new_page:
+                await projects.remove(project_id)
+            logger.info("Cancelled page build for existing route '%s'; nothing was published.", project_id)
+            return
         await lovable.deploy_project(lovable_project_id)
         logger.info("Lovable completed and published page '%s'.", project_id)
     except LovableMcpError:
@@ -367,7 +373,9 @@ def _create_page_prompt(page: LandingPage, payload: CreateProjectRequest) -> str
 
 Create one new landing page for this idea: {payload.idea}
 
-This page's public route MUST be `{page.route}`. First inspect the existing routing and follow its framework conventions. Keep this page's implementation isolated under a route-specific folder named `{page.project_id}` (or the closest framework-equivalent route folder). Register `{page.route}` and add an interactive link to it from the official homepage at `/`.
+Before making any edits, inspect the existing route definitions and route-specific folders. If the project ID `{page.project_id}` or public route `{page.route}` already exists in the Lovable project, cancel this request immediately. Do not write, edit, generate, or delete any code; do not change any files; and do not publish or deploy anything. Return exactly this cancellation marker as your entire response: `{DUPLICATE_ROUTE_SENTINEL}`.
+
+Only if `{page.project_id}` and `{page.route}` do not already exist, proceed with this page creation. Its public route MUST be `{page.route}`. Follow the existing framework's routing conventions and keep the implementation isolated under a route-specific folder named `{page.project_id}` (or the closest framework-equivalent route folder). Register `{page.route}` and add an interactive link to it from the official homepage at `/`.
 
 On the official homepage, add a clear, accessible, responsive link or page card for `{page.route}`. Use a concise label based on this page's content and point it directly to `{page.route}`. Append it to an existing pages, projects, or featured-content section when available; otherwise add a small section for this page without redesigning the homepage. Preserve all existing homepage content, links, visual styling, and behavior.
 

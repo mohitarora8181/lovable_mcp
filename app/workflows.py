@@ -8,6 +8,7 @@ import socket
 from time import perf_counter
 from urllib.parse import urlsplit
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,13 +18,28 @@ from jmespath import functions
 from jsonschema import validate as validate_schema
 
 from .automation import LogStore
-from .config import Settings
+from .config import Settings, get_settings
 from .history import JsonProjectStore, ProjectExistsError, slugify
 from .lovable import LovableMcpClient
 from .models import CreateProjectRequest, WorkflowRequest, WorkflowResponse
 
 
 class WorkflowJMESPathFunctions(functions.Functions):
+    @functions.signature()
+    def _func_today(self) -> str:
+        timezone = ZoneInfo(get_settings().scheduler_timezone)
+        return datetime.now(timezone).date().isoformat()
+
+    @functions.signature()
+    def _func_current_date(self) -> str:
+        timezone = ZoneInfo(get_settings().scheduler_timezone)
+        return datetime.now(timezone).date().isoformat()
+
+    @functions.signature()
+    def _func_now(self) -> str:
+        timezone = ZoneInfo(get_settings().scheduler_timezone)
+        return datetime.now(timezone).isoformat(timespec="seconds")
+
     @functions.signature({"types": ["string"]})
     def _func_lower(self, value: str) -> str:
         return value.lower()
@@ -39,6 +55,14 @@ class WorkflowJMESPathFunctions(functions.Functions):
     @functions.signature({"types": ["string"]})
     def _func_to_upper(self, value: str) -> str:
         return value.upper()
+
+    @functions.signature(
+        {"types": ["string"]},
+        {"types": ["string"]},
+        {"types": ["string"]},
+    )
+    def _func_replace(self, value: str, old: str, new: str) -> str:
+        return value.replace(old, new)
 
 
 _JMESPATH_OPTIONS = jmespath.Options(custom_functions=WorkflowJMESPathFunctions())
@@ -312,11 +336,13 @@ class WorkflowService:
             page_id = payload.project_id or f"{slugify(payload.idea)}-{datetime.now().strftime('%Y%m%d')}"
             try:
                 page = await self.projects.create(page_id, host_id, payload.idea)
-            except ProjectExistsError:
-                page_id = f"{page_id}-{uuid4().hex[:6]}"
-                page = await self.projects.create(page_id, host_id, payload.idea)
-            from .main import _create_page_prompt
-            await self.lovable.send_message(host_id, _create_page_prompt(page, payload))
+            except ProjectExistsError as exc:
+                raise RuntimeError(f"Project ID '{page_id}' already exists. Workflow cancelled without publishing.") from exc
+            from .main import DUPLICATE_ROUTE_SENTINEL, _create_page_prompt
+            response = await self.lovable.send_message(host_id, _create_page_prompt(page, payload))
+            if DUPLICATE_ROUTE_SENTINEL in response:
+                await self.projects.remove(page.project_id)
+                raise RuntimeError(f"Project ID '{page.project_id}' already exists in Lovable. Workflow cancelled without publishing.")
             await self.lovable.deploy_project(host_id)
             return {"project_id": page.project_id, "route": page.route}
         raise RuntimeError(f"Unsupported node type: {node.type}")
