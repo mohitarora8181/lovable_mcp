@@ -4,3 +4,6 @@ __pycache__/
 *.py[cod]
 data/projects.json
 data/lovable_oauth.json
+data/schedules.json
+data/automation_logs.json
+data/workflows.json

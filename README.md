@@ -41,6 +41,11 @@ CORS_ALLOWED_ORIGINS=https://your-frontend.example.com
 # Per-IP safety limit for requests that could spend Lovable credits.
 WRITE_RATE_LIMIT=5
 RATE_LIMIT_WINDOW_SECONDS=60
+
+# Scheduler timezone and persisted schedule definitions.
+SCHEDULER_TIMEZONE=Asia/Kolkata
+SCHEDULES_FILE=data/schedules.json
+AUTOMATION_LOGS_FILE=data/automation_logs.json
 ```
 
 Start the service, then open `http://127.0.0.1:8000/auth/lovable/login` in a
@@ -81,6 +86,25 @@ uvicorn app.main:app --reload
 ```
 
 The interactive API documentation is available at `http://127.0.0.1:8000/docs`.
+
+## Local control panel and scheduled pages
+
+Open `http://127.0.0.1:8000/` after starting the application. Enter your
+`APP_API_KEY` in the control panel, then create a schedule. Each schedule has:
+
+- a name and standard five-part cron expression, such as `0 9 * * *` for 9:00 AM daily;
+- a daily topic/prompt plus optional reference, image, and destination URLs;
+- enable/disable, **Run now**, and delete controls.
+
+At the scheduled time the app sends your saved idea, reference URLs, image
+URLs, and required links directly to Lovable. It creates a unique route, then
+asks Lovable to build and publish it. Schedule state is saved in
+`data/schedules.json`, and the latest run activity is saved in
+`data/automation_logs.json`. Both are restored when the API starts. Keep the
+app running for scheduled jobs to execute.
+
+The panel stores your API key in that browser's local storage. Use it only in
+your private local browser; do not expose this control panel publicly.
 
 Every write request needs this header:
 

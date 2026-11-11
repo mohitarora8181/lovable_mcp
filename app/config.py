@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     write_rate_limit: int = 5
     rate_limit_window_seconds: int = 60
+    schedules_file: Path = Path("data/schedules.json")
+    workflows_file: Path = Path("data/workflows.json")
+    automation_logs_file: Path = Path("data/automation_logs.json")
+    scheduler_timezone: str = "Asia/Kolkata"
 
     model_config = SettingsConfigDict(
         env_file=".env",

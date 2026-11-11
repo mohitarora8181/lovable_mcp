@@ -1,9 +1,10 @@
 from functools import lru_cache
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from .config import Settings, get_settings
 from .history import (
@@ -24,13 +25,27 @@ from .models import (
 )
 from .oauth import LovableOAuth, LovableOAuthError
 from .security import require_api_key
+from .automation import AutomationService
+from .models import AutomationLog, ScheduleRequest, ScheduleResponse, WorkflowRequest, WorkflowResponse
+from .dashboard_spa import DASHBOARD_SPA_HTML
+from .workflow_dashboard import WORKFLOW_DASHBOARD_HTML
+from .workflows import WorkflowService
 
-app = FastAPI(title="Lovable Landing Pages API", version="0.2.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await get_automation().start()
+    await get_workflows().start()
+    yield
+    get_automation().stop()
+    get_workflows().stop()
+
+
+app = FastAPI(title="Lovable Landing Pages API", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in get_settings().cors_allowed_origins.split(",") if origin.strip()],
     allow_credentials=False,
-    allow_methods=["POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 logger = logging.getLogger(__name__)
@@ -47,6 +62,30 @@ def get_lovable_oauth() -> LovableOAuth:
 
 def get_lovable_client(settings: Settings = Depends(get_settings)) -> LovableMcpClient:
     return LovableMcpClient(settings.lovable_mcp_url, get_lovable_oauth())
+
+
+@lru_cache
+def get_automation() -> AutomationService:
+    settings = get_settings()
+    return AutomationService(settings, get_project_store(settings.projects_file), LovableMcpClient(settings.lovable_mcp_url, get_lovable_oauth()))
+
+
+@lru_cache
+def get_workflows() -> WorkflowService:
+    settings = get_settings()
+    automation = get_automation()
+    return WorkflowService(settings, get_project_store(settings.projects_file), LovableMcpClient(settings.lovable_mcp_url, get_lovable_oauth()), automation.logs)
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard() -> HTMLResponse:
+    # The dashboard never polls logs automatically: logging is refreshed only by user action.
+    return HTMLResponse(
+        WORKFLOW_DASHBOARD_HTML.replace(
+            "document.querySelector('.side button:nth-child(3)').click()",
+            "document.querySelectorAll('.side button')[1].click()",
+        )
+    )
 
 
 @app.get("/auth/lovable/login", include_in_schema=False)
@@ -77,6 +116,113 @@ async def lovable_callback(
     return HTMLResponse(
         "<h1>Lovable connected</h1><p>You can close this window and return to the API.</p>"
     )
+
+
+@app.get("/automation/jobs", response_model=list[ScheduleResponse])
+async def list_jobs(_: None = Depends(require_api_key)) -> list[ScheduleResponse]:
+    return await get_automation().store.list()
+
+
+@app.get("/automation/logs", response_model=list[AutomationLog])
+async def list_logs(_: None = Depends(require_api_key)) -> list[AutomationLog]:
+    return await get_automation().logs.list()
+
+
+@app.post("/automation/jobs", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)
+async def create_job(payload: ScheduleRequest, _: None = Depends(require_api_key)) -> ScheduleResponse:
+    try:
+        job = await get_automation().store.create(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    get_automation().sync(job)
+    return job
+
+
+@app.put("/automation/jobs/{schedule_id}", response_model=ScheduleResponse)
+async def update_job(schedule_id: str, payload: ScheduleRequest, _: None = Depends(require_api_key)) -> ScheduleResponse:
+    try:
+        job = await get_automation().store.update(schedule_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not job:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    get_automation().sync(job)
+    return job
+
+
+@app.post("/automation/jobs/{schedule_id}/run", status_code=status.HTTP_202_ACCEPTED)
+async def run_job(schedule_id: str, background_tasks: BackgroundTasks, _: None = Depends(require_api_key)) -> dict[str, str]:
+    if not await get_automation().store.get(schedule_id):
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    background_tasks.add_task(get_automation().run, schedule_id)
+    return {"status": "queued"}
+
+
+@app.delete("/automation/jobs/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_job(schedule_id: str, _: None = Depends(require_api_key)) -> None:
+    automation = get_automation()
+    if not await automation.store.remove(schedule_id):
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    if automation.scheduler.get_job(schedule_id):
+        automation.scheduler.remove_job(schedule_id)
+
+
+@app.get("/workflows", response_model=list[WorkflowResponse])
+async def list_workflows(_: None = Depends(require_api_key)) -> list[WorkflowResponse]:
+    return await get_workflows().store.list()
+
+
+@app.post("/workflows", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
+async def create_workflow(payload: WorkflowRequest, _: None = Depends(require_api_key)) -> WorkflowResponse:
+    try:
+        workflow = await get_workflows().store.create(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    get_workflows().sync(workflow)
+    return workflow
+
+
+@app.put("/workflows/{workflow_id}", response_model=WorkflowResponse)
+async def update_workflow(workflow_id: str, payload: WorkflowRequest, _: None = Depends(require_api_key)) -> WorkflowResponse:
+    try:
+        workflow = await get_workflows().store.update(workflow_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    get_workflows().sync(workflow)
+    return workflow
+
+
+@app.post("/workflows/{workflow_id}/run", status_code=status.HTTP_202_ACCEPTED)
+async def run_workflow(workflow_id: str, background_tasks: BackgroundTasks, _: None = Depends(require_api_key)) -> dict[str, str]:
+    service = get_workflows()
+    if not await service.store.get(workflow_id):
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    run_id = service.create_run()
+    background_tasks.add_task(service.run, workflow_id, run_id, True)
+    return {"status": "queued", "run_id": run_id}
+
+
+@app.get("/workflows/runs/{run_id}/events")
+async def workflow_run_events(run_id: str, _: None = Depends(require_api_key)) -> StreamingResponse:
+    channel = get_workflows().get_run_events(run_id)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Workflow run not found or expired.")
+    return StreamingResponse(
+        channel.stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workflow(workflow_id: str, _: None = Depends(require_api_key)) -> None:
+    service = get_workflows()
+    if not await service.store.remove(workflow_id):
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    if service.scheduler.get_job(workflow_id):
+        service.scheduler.remove_job(workflow_id)
 
 
 @app.post("/projects", response_model=CreateProjectResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -221,9 +367,13 @@ def _create_page_prompt(page: LandingPage, payload: CreateProjectRequest) -> str
 
 Create one new landing page for this idea: {payload.idea}
 
-This page's public route MUST be `{page.route}`. First inspect the existing routing and follow its framework conventions. Keep this page's implementation isolated under a route-specific folder named `{page.project_id}` (or the closest framework-equivalent route folder). Register only the `{page.route}` route.
+This page's public route MUST be `{page.route}`. First inspect the existing routing and follow its framework conventions. Keep this page's implementation isolated under a route-specific folder named `{page.project_id}` (or the closest framework-equivalent route folder). Register `{page.route}` and add an interactive link to it from the official homepage at `/`.
 
-Do not change, move, delete, rename, restyle, or break any existing routes or their route-specific folders. Do not alter global configuration unless it is strictly required to register this one new route.
+On the official homepage, add a clear, accessible, responsive link or page card for `{page.route}`. Use a concise label based on this page's content and point it directly to `{page.route}`. Append it to an existing pages, projects, or featured-content section when available; otherwise add a small section for this page without redesigning the homepage. Preserve all existing homepage content, links, visual styling, and behavior.
+
+Do not change, move, delete, rename, restyle, or break any existing routes or their route-specific folders. The only allowed existing-page edit is the minimal change to the official homepage needed to add this link. Do not alter global configuration unless strictly required to register the new route.
+
+This is an autonomous, pre-approved build request from a server-side automation. Do not ask for clarification, confirmation, approval, or a design choice. Do not pause for user input. Make sensible product and design decisions from the provided brief, complete the implementation, and report the result only after the work is done.
 
 Design references: {payload.reference_sites}
 Image URLs/assets to use when appropriate: {payload.images}
@@ -239,6 +389,8 @@ def _enhancement_prompt(page: LandingPage, enhancement: str) -> str:
 
 Apply this enhancement only to the landing page at `{page.route}`: {enhancement}
 
+This is an autonomous, pre-approved build request from a server-side automation. Do not ask for clarification, confirmation, approval, or a design choice. Do not pause for user input. Make reasonable decisions, implement the enhancement completely, and report the result only after the work is done.
+
 You may edit only the route-specific folder for `{page.project_id}` and the minimum routing code needed for that existing route. Do not modify, delete, move, rename, or restyle any other page, route, or route-specific folder. Preserve the existing route `{page.route}` and its public behavior. Keep its route-specific SEO metadata unique and accurate; update its title, meta description, Open Graph metadata, semantic headings, or alt text only when this enhancement changes them. Report exactly which files you changed."""
 
 
@@ -247,4 +399,9 @@ def _delete_page_prompt(page: LandingPage) -> str:
 
 Delete only the landing page at `{page.route}`. Remove its route-specific folder for `{page.project_id}` and unregister that one route according to the existing routing conventions.
 
+This is an autonomous, pre-approved deletion request from a server-side automation. Do not ask for clarification, confirmation, or approval. Do not pause for user input. Complete only this deletion, then report the result.
+
 Do not modify, delete, move, rename, or restyle any other page, route, route-specific folder, global styles, or configuration. Do not replace this page with a redirect or fallback page. Report exactly which files you removed or changed when finished."""
+
+
+_DASHBOARD_HTML = """<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Landing Page Automations</title><style>body{font:16px system-ui;margin:0;background:#101624;color:#edf2ff}main{max-width:900px;margin:auto;padding:32px}section{background:#192237;padding:22px;border-radius:14px;margin:18px 0}input,textarea,button{font:inherit;padding:10px;border-radius:7px;border:1px solid #40506e;background:#0f1728;color:#fff}input,textarea{width:100%;box-sizing:border-box;margin:6px 0 14px}textarea{min-height:85px}button{background:#5472ff;cursor:pointer;margin-right:7px}button.secondary{background:#334155}.job{border-top:1px solid #40506e;padding:15px 0}.muted{color:#afbdd8;font-size:.9rem}label{font-weight:650}#notice{min-height:24px;color:#a9f5be}</style></head><body><main><h1>Landing Page Automations</h1><p class='muted'>Groq creates a page brief; Lovable builds and deploys it. This panel should remain local/private.</p><section><label>Control-panel API key</label><input id='key' type='password' placeholder='APP_API_KEY'><button onclick='saveKey()'>Unlock</button><span id='notice'></span></section><section><h2>New daily job</h2><form onsubmit='createJob(event)'><label>Name</label><input id='name' required placeholder='Daily startup landing page'><label>Cron (minute hour day month weekday)</label><input id='cron' required value='0 9 * * *'><label>Daily topic / prompt for Groq</label><textarea id='prompt' required placeholder='Create a landing page about today’s useful productivity idea...'></textarea><label>Reference sites (one URL per line)</label><textarea id='refs'></textarea><label>Image URLs (one per line)</label><textarea id='images'></textarea><label>URLs to include (one per line)</label><textarea id='links'></textarea><button>Create schedule</button></form></section><section><h2>Schedules</h2><div id='jobs'>Unlock the panel to load jobs.</div></section></main><script>const el=id=>document.getElementById(id),lines=id=>el(id).value.split('\\n').map(x=>x.trim()).filter(Boolean);let jobsById={};function headers(){return {'Authorization':'Bearer '+localStorage.apiKey,'Content-Type':'application/json'}}function saveKey(){localStorage.apiKey=el('key').value;load()}async function load(){try{let r=await fetch('/automation/jobs',{headers:headers()});if(!r.ok)throw Error((await r.json()).detail);let jobs=await r.json();jobsById=Object.fromEntries(jobs.map(j=>[j.id,j]));el('notice').textContent='Connected';el('jobs').innerHTML=jobs.length?jobs.map(j=>`<div class='job'><b>${j.name}</b> <span class='muted'>${j.cron} · ${j.enabled?'enabled':'disabled'}</span><p>${j.prompt}</p><p class='muted'>Last: ${j.last_status||'never'} ${j.last_detail||''}</p><button onclick='toggle("${j.id}")'>${j.enabled?'Disable':'Enable'}</button><button class='secondary' onclick='run("${j.id}")'>Run now</button><button class='secondary' onclick='removeJob("${j.id}")'>Delete</button></div>`).join(''):'No schedules yet.'}catch(e){el('jobs').textContent='Unable to load: '+e.message}}async function createJob(e){e.preventDefault();let body={name:el('name').value,cron:el('cron').value,prompt:el('prompt').value,reference_sites:lines('refs'),images:lines('images'),urls_to_include:lines('links'),enabled:true};let r=await fetch('/automation/jobs',{method:'POST',headers:headers(),body:JSON.stringify(body)});if(!r.ok)return alert((await r.json()).detail);e.target.reset();el('cron').value='0 9 * * *';load()}async function toggle(id){let j={...jobsById[id]};j.enabled=!j.enabled;delete j.id;delete j.last_run_at;delete j.last_status;delete j.last_detail;await fetch('/automation/jobs/'+id,{method:'PUT',headers:headers(),body:JSON.stringify(j)});load()}async function run(id){await fetch('/automation/jobs/'+id+'/run',{method:'POST',headers:headers()});load()}async function removeJob(id){if(confirm('Delete this schedule?')){await fetch('/automation/jobs/'+id,{method:'DELETE',headers:headers()});load()}}el('key').value=localStorage.apiKey||'';if(localStorage.apiKey)load()</script></body></html>"""
