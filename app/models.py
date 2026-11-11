@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class CreateProjectRequest(BaseModel):
@@ -12,18 +12,8 @@ class CreateProjectRequest(BaseModel):
     urls_to_include: list[str] = Field(default_factory=list, max_length=30)
     project_id: str | None = Field(
         default=None,
-        description="Optional URL-safe page identifier. A slug is derived from the idea when omitted.",
+        description="Optional page identifier stored as provided; the public route is derived from it.",
     )
-
-    @field_validator("project_id")
-    @classmethod
-    def validate_project_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        valid = value.replace("-", "").isalnum()
-        if not value or len(value) > 80 or not valid or value != value.lower():
-            raise ValueError("project_id must be a lowercase kebab-case identifier.")
-        return value
 
 
 class EnhanceProjectRequest(BaseModel):

@@ -304,15 +304,16 @@ class WorkflowService:
             if not isinstance(headers, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items()):
                 raise RuntimeError("HTTP node headers must be a JSON object containing string values.")
             headers = {"Accept": "application/json", **headers}
+            query = _normalize_query_params(node.config.get("query") or {})
             body = node.config.get("body")
             if isinstance(body, (dict, list)):
                 body = json.dumps(body)
                 headers.setdefault("Content-Type", "application/json")
+            request_url = _merge_query_params(url, query)
             async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
                 response = await client.request(
                     method,
-                    url,
-                    params=node.config.get("query", {}),
+                    request_url,
                     headers=headers,
                     content=body.encode("utf-8") if isinstance(body, str) and body else body,
                 )
@@ -333,16 +334,16 @@ class WorkflowService:
             host_id = self.settings.lovable_project_id
             if not host_id:
                 raise RuntimeError("LOVABLE_PROJECT_ID is not configured.")
-            page_id = payload.project_id or f"{slugify(payload.idea)}-{datetime.now().strftime('%Y%m%d')}"
+            page_id = payload.project_id if payload.project_id is not None else f"{slugify(payload.idea)}-{datetime.now().strftime('%Y%m%d')}"
             try:
                 page = await self.projects.create(page_id, host_id, payload.idea)
             except ProjectExistsError as exc:
-                raise RuntimeError(f"Project ID '{page_id}' already exists. Workflow cancelled without publishing.") from exc
-            from .main import DUPLICATE_ROUTE_SENTINEL, _create_page_prompt
+                raise RuntimeError(f"Project ID '{page_id}' or its generated route already exists. Workflow cancelled without publishing.") from exc
+            from .main import _create_page_prompt, _is_duplicate_route_cancellation
             response = await self.lovable.send_message(host_id, _create_page_prompt(page, payload))
-            if DUPLICATE_ROUTE_SENTINEL in response:
+            if _is_duplicate_route_cancellation(response):
                 await self.projects.remove(page.project_id)
-                raise RuntimeError(f"Project ID '{page.project_id}' already exists in Lovable. Workflow cancelled without publishing.")
+                raise RuntimeError(f"Project ID '{page.project_id}' or its route already exists in Lovable. Workflow cancelled without publishing.")
             await self.lovable.deploy_project(host_id)
             return {"project_id": page.project_id, "route": page.route}
         raise RuntimeError(f"Unsupported node type: {node.type}")
@@ -357,6 +358,38 @@ def _map_input(mapping: dict[str, str], context: dict, fallback) -> dict:
         else _jmespath_search(selector.removeprefix("$.") if selector.startswith("$.") else selector, context)
         for key, selector in mapping.items()
     }
+
+
+def _normalize_query_params(query) -> dict[str, object]:
+    if not isinstance(query, dict):
+        raise RuntimeError("HTTP node query parameters must be a JSON object.")
+
+    def normalize(value):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (str, int, float)):
+            return value
+        if isinstance(value, list):
+            return [item for item in (normalize(part) for part in value) if item is not None]
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        raise RuntimeError("HTTP query values must be strings, numbers, booleans, arrays, or objects.")
+
+    if not all(isinstance(key, str) for key in query):
+        raise RuntimeError("HTTP query parameter names must be strings.")
+    return {key: normalized for key, value in query.items() if (normalized := normalize(value)) is not None}
+
+
+def _merge_query_params(url: str, query: dict[str, object]) -> httpx.URL:
+    """Preserve URL query pairs and append configured HTTP-node parameters."""
+    request_url = httpx.URL(url)
+    if not query:
+        return request_url
+    merged = list(request_url.params.multi_items())
+    merged.extend(httpx.QueryParams(query).multi_items())
+    return request_url.copy_with(query=str(httpx.QueryParams(merged)).encode("utf-8"))
 
 
 _TEMPLATE_PATTERN = re.compile(r"{{\s*(.*?)\s*}}")

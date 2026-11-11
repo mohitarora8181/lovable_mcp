@@ -52,6 +52,11 @@ logger = logging.getLogger(__name__)
 DUPLICATE_ROUTE_SENTINEL = "CANCEL_DUPLICATE_PROJECT_ID"
 
 
+def _is_duplicate_route_cancellation(response: str) -> bool:
+    normalized = response.strip().strip("`").strip()
+    return normalized == DUPLICATE_ROUTE_SENTINEL
+
+
 def get_projects(settings: Settings = Depends(get_settings)) -> JsonProjectStore:
     return get_project_store(settings.projects_file)
 
@@ -236,13 +241,13 @@ async def create_project(
     _: None = Depends(require_api_key),
 ) -> CreateProjectResponse:
     lovable_project_id = _host_project_id(settings)
-    project_id = payload.project_id or slugify(payload.idea)
+    project_id = payload.project_id if payload.project_id is not None else slugify(payload.idea)
     try:
         page = await projects.create(project_id, lovable_project_id, payload.idea)
     except ProjectExistsError as exc:
         raise HTTPException(
             status_code=409,
-            detail="This project_id already exists. Choose another project_id.",
+            detail="This project_id or its generated route already exists. Choose another project_id.",
         ) from exc
 
     background_tasks.add_task(
@@ -257,12 +262,12 @@ async def create_project(
 
     return CreateProjectResponse(
         **page.model_dump(),
-        url=_page_url(settings, page.project_id),
+        url=_page_url(settings, page.route),
     )
 
 
 @app.post(
-    "/projects/{project_id}/enhancements",
+    "/projects/{project_id:path}/enhancements",
     response_model=EnhanceProjectResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -291,7 +296,7 @@ async def enhance_project(
 
 
 @app.delete(
-    "/projects/{project_id}",
+    "/projects/{project_id:path}",
     response_model=DeleteProjectResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -318,7 +323,7 @@ async def _build_and_publish(
     """Run after the HTTP response: build first, then publish the host project."""
     try:
         response = await lovable.send_message(lovable_project_id, prompt)
-        if DUPLICATE_ROUTE_SENTINEL in response:
+        if _is_duplicate_route_cancellation(response):
             if is_new_page:
                 await projects.remove(project_id)
             logger.info("Cancelled page build for existing route '%s'; nothing was published.", project_id)
@@ -362,10 +367,11 @@ def _host_project_id(settings: Settings) -> str:
     return settings.lovable_project_id
 
 
-def _page_url(settings: Settings, project_id: str) -> str:
+def _page_url(settings: Settings, route: str) -> str:
+    route = "/" + route.lstrip("/")
     if settings.lovable_base_url:
-        return f"{settings.lovable_base_url.rstrip('/')}/{project_id}"
-    return f"/{project_id}"
+        return f"{settings.lovable_base_url.rstrip('/')}{route}"
+    return route
 
 
 def _create_page_prompt(page: LandingPage, payload: CreateProjectRequest) -> str:
@@ -373,9 +379,11 @@ def _create_page_prompt(page: LandingPage, payload: CreateProjectRequest) -> str
 
 Create one new landing page for this idea: {payload.idea}
 
-Before making any edits, inspect the existing route definitions and route-specific folders. If the project ID `{page.project_id}` or public route `{page.route}` already exists in the Lovable project, cancel this request immediately. Do not write, edit, generate, or delete any code; do not change any files; and do not publish or deploy anything. Return exactly this cancellation marker as your entire response: `{DUPLICATE_ROUTE_SENTINEL}`.
+Treat the supplied project ID `{page.project_id}` as an opaque identifier: keep it unchanged as the project ID, do not reject or normalize it, and do not use it directly as a filesystem path. Derive a short, readable, lowercase URL route from that project ID. The server's reserved route for this request is `{page.route}`; use that exact route consistently in the router, links, and metadata.
 
-Only if `{page.project_id}` and `{page.route}` do not already exist, proceed with this page creation. Its public route MUST be `{page.route}`. Follow the existing framework's routing conventions and keep the implementation isolated under a route-specific folder named `{page.project_id}` (or the closest framework-equivalent route folder). Register `{page.route}` and add an interactive link to it from the official homepage at `/`.
+Before making any edits, inspect the current route definitions and route-specific folders. Cancel only if the exact route `{page.route}` is already registered or its exact route folder already exists in the current project files. A similar route name, matching page idea, prior conversation, project ID mentioned in this prompt, or uncertainty is not evidence of a duplicate. If no exact route or folder exists, proceed with creation. If an exact duplicate exists, do not write, edit, generate, or delete code; do not change files; and do not publish or deploy anything. Return exactly this cancellation marker as your entire response: `{DUPLICATE_ROUTE_SENTINEL}`.
+
+Only if `{page.project_id}` and `{page.route}` do not already exist, proceed with this page creation. Its public route MUST be `{page.route}`. Follow the existing framework's routing conventions and keep the implementation isolated under a route-specific folder named after the short route segment (or the closest framework-equivalent route folder). Register `{page.route}` and add an interactive link to it from the official homepage at `/`.
 
 On the official homepage, add a clear, accessible, responsive link or page card for `{page.route}`. Use a concise label based on this page's content and point it directly to `{page.route}`. Append it to an existing pages, projects, or featured-content section when available; otherwise add a small section for this page without redesigning the homepage. Preserve all existing homepage content, links, visual styling, and behavior.
 
@@ -399,13 +407,13 @@ Apply this enhancement only to the landing page at `{page.route}`: {enhancement}
 
 This is an autonomous, pre-approved build request from a server-side automation. Do not ask for clarification, confirmation, approval, or a design choice. Do not pause for user input. Make reasonable decisions, implement the enhancement completely, and report the result only after the work is done.
 
-You may edit only the route-specific folder for `{page.project_id}` and the minimum routing code needed for that existing route. Do not modify, delete, move, rename, or restyle any other page, route, or route-specific folder. Preserve the existing route `{page.route}` and its public behavior. Keep its route-specific SEO metadata unique and accurate; update its title, meta description, Open Graph metadata, semantic headings, or alt text only when this enhancement changes them. Report exactly which files you changed."""
+You may edit only the route-specific folder for `{page.route.lstrip('/')}` and the minimum routing code needed for that existing route. Do not modify, delete, move, rename, or restyle any other page, route, or route-specific folder. Preserve the existing route `{page.route}` and its public behavior. Keep its route-specific SEO metadata unique and accurate; update its title, meta description, Open Graph metadata, semantic headings, or alt text only when this enhancement changes them. Report exactly which files you changed."""
 
 
 def _delete_page_prompt(page: LandingPage) -> str:
     return f"""You are modifying a shared multi-page landing-site project.
 
-Delete only the landing page at `{page.route}`. Remove its route-specific folder for `{page.project_id}` and unregister that one route according to the existing routing conventions.
+Delete only the landing page at `{page.route}`. Remove its route-specific folder named after the route segment `{page.route.lstrip('/')}` and unregister that one route according to the existing routing conventions.
 
 This is an autonomous, pre-approved deletion request from a server-side automation. Do not ask for clarification, confirmation, or approval. Do not pause for user input. Complete only this deletion, then report the result.
 

@@ -26,12 +26,13 @@ class JsonProjectStore:
     async def create(self, project_id: str, lovable_project_id: str, idea: str) -> LandingPage:
         async with self._lock:
             data = self._read()
-            if project_id in data:
+            route = f"/{slugify(project_id)[:50].rstrip('-') or 'landing-page'}"
+            if project_id in data or any(item.get("route") == route for item in data.values()):
                 raise ProjectExistsError(project_id)
             page = LandingPage(
                 project_id=project_id,
                 lovable_project_id=lovable_project_id,
-                route=f"/{project_id}",
+                route=route,
                 created_at=datetime.now(timezone.utc),
                 idea=idea,
             )
