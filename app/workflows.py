@@ -4,6 +4,7 @@ import ipaddress
 import json
 from pathlib import Path
 import re
+import secrets
 import socket
 from time import perf_counter
 from urllib.parse import urlsplit
@@ -64,11 +65,40 @@ class WorkflowJMESPathFunctions(functions.Functions):
     def _func_replace(self, value: str, old: str, new: str) -> str:
         return value.replace(old, new)
 
+    @functions.signature({"types": ["number"]}, {"types": ["number"]})
+    def _func_random(self, minimum: int, maximum: int) -> int:
+        if isinstance(minimum, bool) or isinstance(maximum, bool) or not isinstance(minimum, int) or not isinstance(maximum, int):
+            raise ValueError("random() bounds must be integers.")
+        if minimum > maximum:
+            raise ValueError("random() minimum must be less than or equal to maximum.")
+        return minimum + secrets.randbelow(maximum - minimum + 1)
+
+    @functions.signature({"types": ["number"]}, {"types": ["number"]})
+    def _func_random_int(self, minimum: int, maximum: int) -> int:
+        return self._func_random(minimum, maximum)
+
+    @functions.signature({"types": ["number"]}, {"types": ["number"]})
+    def _func_random_number(self, minimum: int, maximum: int) -> int:
+        return self._func_random(minimum, maximum)
+
+    @functions.signature({"types": ["array"]}, {"types": ["number"]})
+    def _func_element_at(self, values: list, index: int):
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise ValueError("Array indexes must be integers.")
+        if index < 0 or index >= len(values):
+            raise ValueError(f"Array index {index} is out of range for {len(values)} items.")
+        return values[index]
+
 
 _JMESPATH_OPTIONS = jmespath.Options(custom_functions=WorkflowJMESPathFunctions())
 
 
 def _jmespath_search(expression: str, value):
+    expression = expression.strip()
+    if expression.startswith("$."):
+        expression = expression[2:]
+    expression = _RANDOM_ARRAY_INDEX.sub(r"element_at(\1, \2)", expression)
+    expression = _RANDOM_LITERAL_RANGE.sub(r"\1(`\2`, `\3`)", expression)
     return jmespath.search(expression, value, options=_JMESPATH_OPTIONS)
 
 
@@ -246,10 +276,10 @@ class WorkflowService:
                     validate_schema(instance=node_input, schema=current.input_schema)
                 previous = context.get("previous", {})
                 prepared = current.model_copy(update={
-                    "config": _render_templates(current.config, previous),
-                    "output_selector": _render_templates(current.output_selector, previous),
-                    "transform_script": _render_templates(current.transform_script, previous),
-                    "script": _render_templates(current.script, previous),
+                    "config": _render_templates(current.config, previous, node_input),
+                    "output_selector": _render_templates(current.output_selector, previous, node_input),
+                    "transform_script": _render_templates(current.transform_script, previous, node_input),
+                    "script": _render_templates(current.script, previous, node_input),
                 })
                 output = await self._execute(prepared, node_input, workflow_id)
                 if current.output_schema:
@@ -393,18 +423,20 @@ def _merge_query_params(url: str, query: dict[str, object]) -> httpx.URL:
 
 
 _TEMPLATE_PATTERN = re.compile(r"{{\s*(.*?)\s*}}")
+_RANDOM_LITERAL_RANGE = re.compile(r"\b(random|random_int|random_number)\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)")
+_RANDOM_ARRAY_INDEX = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\[\s*((?:random|random_int|random_number)\([^()]*\))\s*\]")
 
 
-def _render_templates(value, previous):
-    """Resolve {{path}} tokens recursively against the preceding node output."""
+def _render_templates(value, previous, input_data=None):
+    """Resolve {{path}} tokens against the node input and preceding output."""
     if isinstance(value, dict):
         return {
-            _render_templates(key, previous) if isinstance(key, str) else key:
-            _render_templates(item, previous)
+            _render_templates(key, previous, input_data) if isinstance(key, str) else key:
+            _render_templates(item, previous, input_data)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_render_templates(item, previous) for item in value]
+        return [_render_templates(item, previous, input_data) for item in value]
     if not isinstance(value, str):
         return value
 
@@ -416,21 +448,40 @@ def _render_templates(value, previous):
         expression = expression.strip()
         if expression in {"", ".", "input", "previous", "output", "this"}:
             return previous
+        use_input = False
+        use_previous = False
         for prefix in ("input.", "previous.", "output.", "this."):
             if expression.startswith(prefix):
+                use_input = prefix == "input."
+                use_previous = prefix in {"previous.", "output.", "this."}
                 expression = expression[len(prefix):]
                 break
-        source = previous
-        if isinstance(source, str):
-            try:
-                source = json.loads(source)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Cannot read '{{{{{expression}}}}}' because the previous output is text, not JSON. Use '{{{{input}}}}' to insert the full text."
-                ) from exc
-        if isinstance(source, dict) and "input" not in source:
-            source = {**source, "input": source}
-        return _jmespath_search(expression, source)
+        expression = _RANDOM_ARRAY_INDEX.sub(r"element_at(\1, \2)", expression)
+        expression = _RANDOM_LITERAL_RANGE.sub(r"\1(`\2`, `\3`)", expression)
+
+        def prepare_source(source):
+            if isinstance(source, str):
+                try:
+                    source = json.loads(source)
+                except json.JSONDecodeError:
+                    if input_data is not None and source is previous:
+                        return source
+                    raise ValueError(
+                        f"Cannot read '{{{{{expression}}}}}' because the previous output is text, not JSON. Use '{{{{input}}}}' to insert the full text."
+                    )
+            if isinstance(source, dict):
+                if "input" not in source:
+                    source = {**source, "input": source}
+                return source
+            return {"value": source, "input": source}
+
+        selected_source = previous if use_previous or input_data is None else input_data
+        source = prepare_source(selected_source)
+        result = _jmespath_search(expression, source)
+        if result is None and input_data is not None and not use_input and not use_previous:
+            fallback = prepare_source(previous)
+            result = _jmespath_search(expression, fallback)
+        return result
 
     if len(matches) == 1 and matches[0].span() == (0, len(value)):
         return resolve(matches[0].group(1))
