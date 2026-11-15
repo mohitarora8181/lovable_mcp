@@ -1,7 +1,11 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
@@ -30,8 +34,25 @@ class Settings(BaseSettings):
     automation_logs_file: Path = Path("data/automation_logs.json")
     scheduler_timezone: str = "Asia/Kolkata"
 
+    @model_validator(mode="after")
+    def anchor_storage_paths(self):
+        """Keep JSON state in this checkout regardless of the process cwd."""
+        for field_name in (
+            "oauth_store_file",
+            "projects_file",
+            "schedules_file",
+            "workflows_file",
+            "system_schedule_state_file",
+            "automation_logs_file",
+        ):
+            path = Path(getattr(self, field_name)).expanduser()
+            if not path.is_absolute():
+                path = PROJECT_ROOT / path
+            setattr(self, field_name, path.resolve())
+        return self
+
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
