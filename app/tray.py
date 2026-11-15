@@ -50,7 +50,13 @@ def main() -> None:
         pystray.MenuItem("Disable startup and scheduled runs (restart app)", disable),
         pystray.MenuItem("Quit tray", lambda icon, _item: icon.stop()),
     )
-    pystray.Icon("lovable-workflows", image, "Lovable Workflows", menu).run()
+    icon = pystray.Icon("lovable-workflows", image, "Lovable Workflows", menu)
+    print(
+        "Lovable Workflow Tray is running. The process stays open to keep the tray icon active; "
+        "use the tray menu's Quit option to stop it. The icon may be under the system tray overflow arrow.",
+        flush=True,
+    )
+    icon.run()
 
 
 if __name__ == "__main__":
