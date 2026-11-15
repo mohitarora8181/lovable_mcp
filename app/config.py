@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     schedules_file: Path = Path("data/schedules.json")
     workflows_file: Path = Path("data/workflows.json")
+    system_schedule_state_file: Path = Path("data/system_schedule_state.json")
     automation_logs_file: Path = Path("data/automation_logs.json")
     scheduler_timezone: str = "Asia/Kolkata"
 

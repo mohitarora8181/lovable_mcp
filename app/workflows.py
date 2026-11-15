@@ -231,6 +231,9 @@ class WorkflowService:
         return value
 
     async def start(self) -> None:
+        from .system_scheduler import is_installed
+        if is_installed():
+            return
         self.scheduler.start()
         for workflow in await self.store.list():
             self.sync(workflow)
@@ -240,6 +243,9 @@ class WorkflowService:
             self.scheduler.shutdown(wait=False)
 
     def sync(self, workflow: WorkflowResponse) -> None:
+        from .system_scheduler import is_installed
+        if is_installed():
+            return
         if self.scheduler.get_job(workflow.id):
             self.scheduler.remove_job(workflow.id)
         if workflow.enabled and workflow.cron:
@@ -281,7 +287,7 @@ class WorkflowService:
                     "transform_script": _render_templates(current.transform_script, previous, node_input),
                     "script": _render_templates(current.script, previous, node_input),
                 })
-                output = await self._execute(prepared, node_input, workflow_id)
+                output = await self._execute(prepared, node_input, workflow_id, run_id)
                 if current.output_schema:
                     validate_schema(instance=output, schema=current.output_schema)
                 await self._publish(run_id, {
@@ -301,6 +307,7 @@ class WorkflowService:
             await self.store.result(workflow_id, "success", "Workflow completed")
             await self.logs.add("success", f"Workflow completed: {workflow.name}", workflow_id)
             await self._publish(run_id, {"type": "run_completed", "message": "Workflow completed."})
+            _notify_desktop("Workflow completed", workflow.name)
         except Exception as exc:
             await self.store.result(workflow_id, "failed", str(exc)[:1000])
             await self.logs.add("error", f"Workflow failed: {str(exc)[:500]}", workflow_id)
@@ -310,8 +317,9 @@ class WorkflowService:
                     "label": current.label, "message": str(exc)[:3000],
                 })
             await self._publish(run_id, {"type": "run_failed", "message": str(exc)[:3000]})
+            _notify_desktop("Workflow failed", f"{workflow.name}: {str(exc)[:180]}")
 
-    async def _execute(self, node, node_input: dict, workflow_id: str):
+    async def _execute(self, node, node_input: dict, workflow_id: str, run_id: str | None = None):
         await self.logs.add("info", f"Running {node.type} node: {node.label}", workflow_id)
         if node.type == "start":
             return node.config or node_input
@@ -364,19 +372,47 @@ class WorkflowService:
             host_id = self.settings.lovable_project_id
             if not host_id:
                 raise RuntimeError("LOVABLE_PROJECT_ID is not configured.")
-            page_id = payload.project_id if payload.project_id is not None else f"{slugify(payload.idea)}-{datetime.now().strftime('%Y%m%d')}"
-            try:
-                page = await self.projects.create(page_id, host_id, payload.idea)
-            except ProjectExistsError as exc:
-                raise RuntimeError(f"Project ID '{page_id}' or its generated route already exists. Workflow cancelled without publishing.") from exc
+            base_id = payload.project_id if payload.project_id is not None else f"{slugify(payload.idea)}-{datetime.now().strftime('%Y%m%d')}"
             from .main import _create_page_prompt, _is_duplicate_route_cancellation
-            response = await self.lovable.send_message(host_id, _create_page_prompt(page, payload))
-            if _is_duplicate_route_cancellation(response):
-                await self.projects.remove(page.project_id)
-                raise RuntimeError(f"Project ID '{page.project_id}' or its route already exists in Lovable. Workflow cancelled without publishing.")
-            await self.lovable.deploy_project(host_id)
-            return {"project_id": page.project_id, "route": page.route}
+            max_attempts = 4
+            for attempt in range(max_attempts):
+                page_id = base_id if attempt == 0 else f"{base_id[:38].rstrip('-')}-{uuid4().hex[:8]}"
+                try:
+                    page = await self.projects.create(page_id, host_id, payload.idea)
+                except ProjectExistsError:
+                    message = f"Create page ID/route '{page_id}' already exists (attempt {attempt + 1}/{max_attempts})."
+                    await self.logs.add("warning", message, workflow_id)
+                    await self._publish(run_id, {"type": "node_retry", "node_id": node.id, "label": node.label, "message": message})
+                    if attempt + 1 == max_attempts:
+                        raise RuntimeError(f"Could not find a unique project route after {max_attempts} attempts.")
+                    await self.logs.add("info", "Retrying create-page with a generated unique ID.", workflow_id)
+                    continue
+                try:
+                    response = await self.lovable.send_message(host_id, _create_page_prompt(page, payload))
+                    if _is_duplicate_route_cancellation(response):
+                        await self.projects.remove(page.project_id)
+                        message = f"Lovable reports route '{page.route}' already exists (attempt {attempt + 1}/{max_attempts})."
+                        await self.logs.add("warning", message, workflow_id)
+                        await self._publish(run_id, {"type": "node_retry", "node_id": node.id, "label": node.label, "message": message})
+                        if attempt + 1 == max_attempts:
+                            raise RuntimeError(f"Lovable rejected {max_attempts} unique route attempts; no page was published.")
+                        await self.logs.add("info", "Retrying create-page with a generated unique ID.", workflow_id)
+                        continue
+                    await self.lovable.deploy_project(host_id)
+                    return {"project_id": page.project_id, "route": page.route}
+                except Exception:
+                    await self.projects.remove(page.project_id)
+                    raise
         raise RuntimeError(f"Unsupported node type: {node.type}")
+
+
+def _notify_desktop(title: str, message: str) -> None:
+    try:
+        from plyer import notification
+        notification.notify(title=title, message=message[:240], app_name="Lovable Workflows", timeout=8)
+    except Exception:
+        # Notifications are best-effort; they must never change a workflow result.
+        pass
 
 
 def _map_input(mapping: dict[str, str], context: dict, fallback) -> dict:

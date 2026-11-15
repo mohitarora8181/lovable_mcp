@@ -7,3 +7,6 @@ data/lovable_oauth.json
 data/schedules.json
 data/automation_logs.json
 data/workflows.json
+data/system_schedule_state.json
+data/.desktop_mode
+data/*.log

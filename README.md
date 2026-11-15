@@ -100,8 +100,32 @@ At the scheduled time the app sends your saved idea, reference URLs, image
 URLs, and required links directly to Lovable. It creates a unique route, then
 asks Lovable to build and publish it. Schedule state is saved in
 `data/schedules.json`, and the latest run activity is saved in
-`data/automation_logs.json`. Both are restored when the API starts. Keep the
-app running for scheduled jobs to execute.
+`data/automation_logs.json`. Both are restored when the API starts. The regular
+local API scheduler runs while the application is open.
+
+### Run workflows from the system tray at login
+
+Install the desktop dependencies with `pip install -r requirements.txt`, then
+start the tray companion once:
+
+```powershell
+python -m app.tray
+```
+
+Use **Enable startup and scheduled runs** in the tray menu. This registers a
+per-user OS task (Windows Task Scheduler, macOS LaunchAgent, or Linux cron plus
+desktop autostart). The OS checks saved workflow cron expressions every minute;
+if the computer was off during a scheduled time, the next check runs that
+workflow once. Workflow schedule definitions remain in `data/workflows.json`.
+The tray icon stays available in the system tray/overflow area, starts the
+local dashboard service at login, and desktop notifications report completed
+and failed runs. Duplicate project IDs/routes are retried up to four times
+with generated unique IDs, with every retry recorded in the workflow logs.
+
+Choose **Disable startup and scheduled runs** to remove the OS tasks. Installing
+this integration is local to this computer; it does not configure a hosted
+FastAPI deployment. Keep this project folder and its `.env` in place because
+the OS tasks point to this installation.
 
 The panel stores your API key in that browser's local storage. Use it only in
 your private local browser; do not expose this control panel publicly.
